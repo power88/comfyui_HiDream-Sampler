@@ -25,6 +25,7 @@ try:
 except ImportError:
     accelerate_available = False
     print("Warning: accelerate not installed. device_map='auto' for GPTQ models will not be available.")
+
 try:
     import auto_gptq
     autogptq_available = True
@@ -32,12 +33,14 @@ except ImportError:
     autogptq_available = False
     # Note: Optimum might still load GPTQ without auto-gptq if using ExLlama kernels,
     # but it's often required. Add a warning if NF4 models are selected later.
+
 try:
     import optimum
     optimum_available = True
 except ImportError:
     optimum_available = False
     # Add a warning if NF4 models are selected later.
+
 try:
     from transformers import BitsAndBytesConfig as TransformersBitsAndBytesConfig
     from diffusers import BitsAndBytesConfig as DiffusersBitsAndBytesConfig
@@ -48,6 +51,8 @@ except ImportError:
     TransformersBitsAndBytesConfig = None
     DiffusersBitsAndBytesConfig = None
     print("Warning: bitsandbytes not installed. 4-bit BNB quantization will not be available.")
+
+
 # --- Core Imports ---
 from transformers import LlamaForCausalLM, AutoTokenizer # Use AutoTokenizer
 # --- HiDream Specific Imports ---
@@ -72,15 +77,20 @@ except ImportError as e:
     FlowUniPCMultistepScheduler = None
     FlashFlowMatchEulerDiscreteScheduler = None
     hidream_classes_loaded = False
+
+# --- Configurations ---
 # --- Model Paths ---
 ORIGINAL_MODEL_PREFIX = "HiDream-ai"
 NF4_MODEL_PREFIX = "azaneko"
 ORIGINAL_LLAMA_MODEL_NAME = "nvidia/Llama-3.1-Nemotron-Nano-8B-v1" # For original/FP8
 NF4_LLAMA_MODEL_NAME = "hugging-quants/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4" # For NF4
+
 # Add uncensored model paths (using the same model as NF4 since it's less censored)
 UNCENSORED_LLAMA_MODEL_NAME = "hugging-quants/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4" 
 UNCENSORED_NF4_LLAMA_MODEL_NAME = "hugging-quants/Meta-Llama-3.1-8B-Instruct-GPTQ-INT4"
 # --- Model Configurations ---
+
+
 # Added flags for dependency checks
 MODEL_CONFIGS = {
     # --- NF4 Models ---
@@ -122,19 +132,30 @@ MODEL_CONFIGS = {
         "is_nf4": False, "is_fp8": False, "requires_bnb": True, "requires_gptq_deps": False
     }
 }
-
+# --- Resolutions Config ---
+RESOLUTION_OPTIONS = [ # (Keep list the same)
+    "1024 × 1024 (Square)","768 × 1360 (Portrait)","1360 × 768 (Landscape)",
+    "880 × 1168 (Portrait)","1168 × 880 (Landscape)","1248 × 832 (Landscape)",
+    "832 × 1248 (Portrait)"
+]
 # --- Filter models based on available dependencies ---
 original_model_count = len(MODEL_CONFIGS)
+
+# TODO: We need to change another way to tell the user install dependencies instead of hide them.
+# In my opinion, add a logic to ensure that the bnb and optium are configured. If not, raise a ModuleNotFound error to tell user install requirements.
+
 if not bnb_available:
-    MODEL_CONFIGS = {k: v for k, v in MODEL_CONFIGS.items() if not v.get("requires_bnb", False)}
+    MODEL_CONFIGS = {k: v for k, v in MODEL_CONFIGS.items() if not v.get("requires_bnb", False)} 
 if not optimum_available or not autogptq_available:
     MODEL_CONFIGS = {k: v for k, v in MODEL_CONFIGS.items() if not v.get("requires_gptq_deps", False)}
 if not hidream_classes_loaded:
     MODEL_CONFIGS = {}
     
 filtered_model_count = len(MODEL_CONFIGS)
+
 if filtered_model_count == 0:
-    print("*"*70 + "\nCRITICAL ERROR: No HiDream models available...\n" + "*"*70)
+    print("*"*70 + 
+          "\nCRITICAL ERROR: No HiDream models available...\n" + "*"*70)
 elif filtered_model_count < original_model_count:
     print("*"*70 + "\nWarning: Some HiDream models disabled...\n" + "*"*70)
 
@@ -310,11 +331,7 @@ def load_models(model_type, use_uncensored_llm):
     return pipe, config
     
 # --- Resolution Parsing & Tensor Conversion ---
-RESOLUTION_OPTIONS = [ # (Keep list the same)
-    "1024 × 1024 (Square)","768 × 1360 (Portrait)","1360 × 768 (Landscape)",
-    "880 × 1168 (Portrait)","1168 × 880 (Landscape)","1248 × 832 (Landscape)",
-    "832 × 1248 (Portrait)"
-]
+
 
 def parse_resolution(resolution_str):
     """Parse resolution string into height and width dimensions."""
@@ -337,6 +354,7 @@ def parse_resolution(resolution_str):
     except Exception as e:
         print(f"Error parsing resolution '{resolution_str}': {e}. Falling back to 1024x1024.")
         return 1024, 1024
+    
 def pil2tensor(image: Image.Image):
     """Convert PIL image to tensor with better error handling"""
     if image is None:
