@@ -422,8 +422,7 @@ class HiDreamSampler:
     def generate(self, model_type, prompt, fixed_resolution, seed, override_steps, override_cfg, override_width, override_height, custom_text_encoder=None, **kwargs):
         print("DEBUG: HiDreamSampler.generate() called")
         if not MODEL_CONFIGS or model_type == "error": 
-            print("HiDream Error: No models loaded.")
-            return (torch.zeros((1, 512, 512, 3)),)
+            raise RuntimeError("No models loaded.") 
         pipe = None
         config = None
         use_uncensored_llm = False
@@ -492,11 +491,11 @@ class HiDreamSampler:
                 print(f"!!! ERROR loading {model_type}: {e}")
                 import traceback
                 traceback.print_exc()
-                return (torch.zeros((1, 512, 512, 3)),)
+                raise RuntimeError(e)
 
         if pipe is None or config is None: 
             print("CRITICAL ERROR: Load failed.")
-            return (torch.zeros((1, 512, 512, 3)),)
+            raise RuntimeError("CRITICAL ERROR: Load failed.")
         # --- Generation Setup ---
         is_nf4_current = config.get("is_nf4", False)
         
@@ -548,7 +547,7 @@ class HiDreamSampler:
             print(f"!!! ERROR during execution: {e}")
             import traceback
             traceback.print_exc()
-            return (torch.zeros((1, height, width, 3)),)
+            raise RuntimeError(e)
 
         finally: 
             pbar.update_absolute(num_inference_steps) # Update pbar regardless
@@ -556,7 +555,8 @@ class HiDreamSampler:
         
         # Robust output handling
         if output_images is None or len(output_images) == 0:
-            print("ERROR: No images returned. Creating blank image.")
+            print("ERROR: No images returned.")
+            raise RuntimeError("No images returned.")
             return (torch.zeros((1, height, width, 3)),)
             
         try:
@@ -591,6 +591,7 @@ class HiDreamSampler:
             print(f"Error processing output image: {e}")
             import traceback
             traceback.print_exc()
+            raise RuntimeError(f"Error processing output image: {e}")
             return (torch.zeros((1, height, width, 3)),)
 
 class HiDreamSamplerAdvanced:
@@ -655,6 +656,7 @@ class HiDreamSamplerAdvanced:
             
         if not MODEL_CONFIGS or model_type == "error":
             print("HiDream Error: No models loaded.")
+            raise RuntimeError("HiDream Error: No models loaded.")
             return (torch.zeros((1, 512, 512, 3)),)
             
         pipe = None; config = None
@@ -728,10 +730,11 @@ class HiDreamSamplerAdvanced:
                 print(f"!!! ERROR loading {model_type}: {e}")
                 import traceback
                 traceback.print_exc()
+                raise RuntimeError(e)
                 return (torch.zeros((1, 512, 512, 3)),)
                 
         if pipe is None or config is None:
-            print("CRITICAL ERROR: Load failed.")
+            raise RuntimeError("CRITICAL ERROR: Load failed.")
             return (torch.zeros((1, 512, 512, 3)),)
             
         # --- Update scheduler if requested ---
@@ -832,6 +835,7 @@ class HiDreamSamplerAdvanced:
             print(f"!!! ERROR during execution: {e}")
             import traceback
             traceback.print_exc()
+            raise RuntimeError(e)
             return (torch.zeros((1, height, width, 3)),)
         finally:
             pbar.update_absolute(num_inference_steps) # Update pbar regardless
@@ -1035,6 +1039,7 @@ class HiDreamImg2Img:
             
         if not MODEL_CONFIGS or model_type == "error":
             print("HiDream Error: No models loaded.")
+            raise RuntimeError("HiDream Error: No models loaded.")
             return (torch.zeros((1, 512, 512, 3)),)
             
         pipe = None
@@ -1128,6 +1133,7 @@ class HiDreamImg2Img:
                 
         if pipe is None or config is None:
             print("CRITICAL ERROR: Load failed.")
+            raise RuntimeError("CRITICAL ERROR: Load failed.")
             return (torch.zeros((1, 512, 512, 3)),)
         
         # Update scheduler if requested
