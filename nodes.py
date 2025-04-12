@@ -11,7 +11,6 @@ import torch
 import numpy as np
 from PIL import Image
 import comfy.model_management as mm
-import comfy.utils
 import gc
 import os # For checking paths if needed
 import importlib.util
@@ -52,7 +51,7 @@ from transformers import (
     AutoTokenizer
 )
 from diffusers.models.autoencoders import AutoencoderKL
-from comfy.utils import load_torch_file
+from comfy.utils import load_torch_file, pil2tensor
 try:
     # Assuming hi_diffusers is cloned into this custom_node's directory
     from .hi_diffusers.models.transformers.transformer_hidream_image import HiDreamImageTransformer2DModel
@@ -153,6 +152,7 @@ if bnb_available:
     bnb_transformer_4bit_config = DiffusersBitsAndBytesConfig(load_in_4bit=True)
 
 
+
 class HiDreamDMLoader:
     @classmethod
     def INPUT_TYPES(s):
@@ -214,9 +214,9 @@ class HiDreamDMLoader:
                 print("Warning: You are trying to load full checkpoint in fp16 weight which your free VRAM is not big enough.")
             
         
-        print("     Loading Transformer...")
+        print("Loading Transformer...")
         transformer = HiDreamImageTransformer2DModel.from_pretrained(MODEL_CONFIGS[diffusion_model_name]['path'], **transformer_load_kwargs)
-        print("     Moving Transformer to CUDA...")
+        print("Moving Transformer to main device...")
         transformer.to(device)
 
         # scheduler        
@@ -231,6 +231,7 @@ class HiDreamDMLoader:
         pipe_config = {
             "diffusion_model": transformer,
             "diffusion_path": MODEL_CONFIGS[diffusion_model_name]['path'],
+            "shift": MODEL_CONFIGS[diffusion_model_name]['shift'],
             "scheduler": scheduler
         }
         
@@ -456,19 +457,23 @@ class HiDreamKSampler:
             "required": {
                 "MODEL":("HiDreamDiT",),
                 "CONDITIONING":("HiDreamTextEmbedding",),
-                "VAE": ("HiDreamVAE"),
-                "LATENT": ("LATENT")
+                "VAE": ("HiDreamVAE",),
+                "LATENT": ("LATENT", {"tooltip": "Now LATENT can be only used for get image size. It's not supported in img2img."}),
+                "seed": ("INT", {"default": 0, "min": 0, "max": 0xffffffffffffffff, "control_after_generate": True, "tooltip": "The random seed used for creating the noise."}),
+                "steps": ("INT", {"default": 50, "min": 1, "max": 10000, "tooltip": "The number of steps used in the denoising process."}),
+                "cfg": ("FLOAT", {"default": 5.0, "min": 0.0, "max": 100.0, "step":0.1, "round": 0.01, "tooltip": "The Classifier-Free Guidance scale balances creativity and adherence to the prompt. Higher values result in images more closely matching the prompt however too high values will negatively impact quality."}),
+                "scheduler": (["default", "UniPC", "Euler", "Euler Karras", "Euler Exponential"], {"tooltip": "The scheduler controls how noise is gradually removed to form the image."}),
             },
         }
-    RETURN_TYPES = ("HiDreamPipe",)
-    RETURN_NAMES = ("pipe",)
+    RETURN_TYPES = ("IMAGE",)
+    RETURN_NAMES = ("IMAGE",)
     FUNCTION = "run_pipe"
     CATEGORY = "HiDream"
 
-    def run_pipe(self, MODEL, CONDITIONING, VAE):
-        # Prepare pipe
+    def run_pipe(self, MODEL, CONDITIONING, VAE, LATENT, seed, steps, cfg, scheduler):
+        # Pipeline setup.
         # TODO: Use __call__ only, no from_pretrained in the future.
-        pipeline = HiDreamImagePipeline.from_pretrained(
+        pipe = HiDreamImagePipeline.from_pretrained(
             MODEL['diffusion_path'],
             scheduler=MODEL['scheduler'],
             text_encoder_1=CONDITIONING['clip_l_te'],
@@ -481,6 +486,61 @@ class HiDreamKSampler:
             torch_dtype=torch.bfloat16 if (torch.cuda.is_avaliable() and torch.cuda.is_bf16_supported()) else torch.float16,
             low_cpu_mem_usage=True
         )
+        # Patch scheduler
+        original_shift = MODEL['shift']
+        if scheduler != "Default":
+            if scheduler == "UniPC":
+                new_scheduler = FlowUniPCMultistepScheduler(num_train_timesteps=1000, shift=original_shift, use_dynamic_shifting=False)
+                pipe.scheduler = new_scheduler
+            elif scheduler == "Euler":
+                new_scheduler = FlashFlowMatchEulerDiscreteScheduler(num_train_timesteps=1000, shift=original_shift, use_dynamic_shifting=False)
+                pipe.scheduler = new_scheduler
+            elif scheduler == "Euler Karras":
+                new_scheduler = FlashFlowMatchEulerDiscreteScheduler(
+                    num_train_timesteps=1000, 
+                    shift=original_shift, 
+                    use_dynamic_shifting=False,
+                    use_karras_sigmas=True
+                )
+                pipe.scheduler = new_scheduler
+            elif scheduler == "Euler Exponential":
+                new_scheduler = FlashFlowMatchEulerDiscreteScheduler(
+                    num_train_timesteps=1000, 
+                    shift=original_shift,
+                    use_dynamic_shifting=False,
+                    use_exponential_sigmas=True
+                )
+                pipe.scheduler = new_scheduler
+        # Patch transformer
+        inference_device = mm.get_torch_device()
+        pipe.transformer = MODEL['diffusion_model']
+
+        pipe.to(inference_device)
+        # TODO: Calculate Sigma to support denosing length.
+
+        # Seed
+        generator = torch.Generator(device=inference_device).manual_seed(seed)
+
+        # Try process latent.(The latent has been preprocessed by VAE Encode or EmptyLatentImage)
+        # ComfyUI provides (B, C, H, W). No need to convert.
+        width, height = LATENT.shape[2], LATENT.shape[1]
+
+        # Almost done. Let's run pipe!
+        result_image = pipe(
+            prompt=CONDITIONING["positive_prompt"],
+            negative_prompt=CONDITIONING["negative_prompt"],
+            height=height,
+            width=width,
+            num_inference_steps=steps,
+            guidance_scale=cfg,
+            generator=generator,
+            latents=LATENT,
+            output_type="pil"
+        )
+        tensor = pil2tensor(result_image)
+        return(tensor,)
+
+
         """
         def __call__(
         self,
