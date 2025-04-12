@@ -19,3 +19,6 @@ tokenicer
 threadpoolctl
 logbar
 datasets
+
+# For downloading model
+huggingface_hub

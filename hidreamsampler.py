@@ -169,7 +169,7 @@ def get_scheduler_instance(scheduler_name, shift_value):
     return scheduler_class(num_train_timesteps=1000, shift=shift_value, use_dynamic_shifting=False)
 
 # --- Loading Function (Handles NF4, FP8, and default BNB) ---
-def load_models(model_type, use_uncensored_llm):
+def load_models(model_type, use_uncensored_llm, custom_llm):
     if not hidream_classes_loaded:
         raise ImportError("Cannot load models: HiDream classes failed to import.")
     if model_type not in MODEL_CONFIGS:
@@ -224,7 +224,13 @@ def load_models(model_type, use_uncensored_llm):
         else:
             raise ImportError("BNB config required for standard LLM.")
         
-        text_encoder_load_kwargs["attn_implementation"] = "flash_attention_2" if importlib.util.find_spec("flash_attn") else "eager"
+    text_encoder_load_kwargs["attn_implementation"] = "flash_attention_2" if importlib.util.find_spec("flash_attn") else "eager"
+
+    if custom_llm is not None:
+        # I'm not sure which LLM the user is using (it could be quantized or full-weight). 
+        # So here I can only implement bnb quantization, otherwise it maybe run Out Of Memory (OOM).
+        llama_model_name = custom_llm
+        text_encoder_load_kwargs["quantization_config"] = bnb_llm_config
     
     print(f"[1b] Loading Tokenizer: {llama_model_name}...")
     tokenizer = AutoTokenizer.from_pretrained(llama_model_name, use_fast=False)
@@ -403,6 +409,9 @@ class HiDreamSampler:
                 "override_cfg": ("FLOAT", {"default": -1.0, "min": -1.0, "max": 20.0, "step": 0.1}),
                 "override_width": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 8}),
                 "override_height": ("INT", {"default": 0, "min": 0, "max": 2048, "step": 8})
+            },
+            "optional": {
+                "custom_text_encoder": ("STRING", {"tooltip": "The finetuned Llama 3.1 8b BASE model you want to load. The encoder must in HF format. (eg. meta-llama/Llama-3.1-8B) \n Note: It's not recommend to use Instruct model."}),
             }
         }
     
@@ -410,7 +419,7 @@ class HiDreamSampler:
     RETURN_NAMES = ("image",)
     FUNCTION = "generate"
     CATEGORY = "HiDream"
-    def generate(self, model_type, prompt, fixed_resolution, seed, override_steps, override_cfg, override_width, override_height, **kwargs):
+    def generate(self, model_type, prompt, fixed_resolution, seed, override_steps, override_cfg, override_width, override_height, custom_text_encoder=None, **kwargs):
         print("DEBUG: HiDreamSampler.generate() called")
         if not MODEL_CONFIGS or model_type == "error": 
             print("HiDream Error: No models loaded.")
@@ -419,7 +428,22 @@ class HiDreamSampler:
         config = None
         use_uncensored_llm = False
         cache_key = f"HiDreamSampler_{model_type}_{'uncensored' if use_uncensored_llm else 'standard'}"
-        
+
+        # --- Check custom_text_encoder ---
+        if custom_text_encoder is not None:
+            if ('/' in custom_text_encoder) and ('llama' in custom_text_encoder) and (len(str(custom_text_encoder).split("/")) == 2):
+                try:
+                    from huggingface_hub import repo_exists
+                    if not repo_exists(custom_text_encoder, repo_type="model"):
+                        raise Exception("Your custom model does not exist or invisible, please use 'huggingface-cli login' to login.")
+                except ImportError:
+                    raise ImportError("Please install huggingface_hub")
+                if ('instruct' in str(custom_text_encoder.lower())):
+                    print('*' * 10 + '\nWarning: The instruct model is not suitable for this model, which may cause issues.\n' + '*' * 10)
+            else:
+                print('*' * 10 + '\nWarning: The model is not suitable for this model, which may cause tensor issues.\n' + '*' * 10)
+                
+
         # --- Model Loading / Caching ---
         if cache_key in self._model_cache:
                 print(f"Checking cache for {cache_key}...")
@@ -461,7 +485,7 @@ class HiDreamSampler:
                 
             print(f"Loading model for {model_type}{' (uncensored)' if use_uncensored_llm else ''}...")
             try:
-                pipe, config = load_models(model_type, use_uncensored_llm)
+                pipe, config = load_models(model_type, use_uncensored_llm, custom_text_encoder)
                 self._model_cache[cache_key] = (pipe, config)
                 print(f"Model {model_type}{' (uncensored)' if use_uncensored_llm else ''} loaded & cached!")
             except Exception as e:
@@ -526,7 +550,8 @@ class HiDreamSampler:
             traceback.print_exc()
             return (torch.zeros((1, height, width, 3)),)
 
-        finally: pbar.update_absolute(num_inference_steps) # Update pbar regardless
+        finally: 
+            pbar.update_absolute(num_inference_steps) # Update pbar regardless
         print("--- Generation Complete ---")
         
         # Robust output handling
@@ -601,6 +626,7 @@ class HiDreamSamplerAdvanced:
                 "use_uncensored_llm": ("BOOLEAN", {"default": False})
             },
             "optional": {
+                "custom_text_encoder": ("STRING", {"tooltip": "The finetuned Llama 3.1 8b BASE model you want to load. The encoder must in HF format. (eg. meta-llama/Llama-3.1-8B) \n Note: It's not recommend to use Instruct model."}),
                 "clip_l_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "openclip_prompt": ("STRING", {"multiline": True, "default": ""}),
                 "t5_prompt": ("STRING", {"multiline": True, "default": ""}),
@@ -618,7 +644,7 @@ class HiDreamSamplerAdvanced:
     CATEGORY = "HiDream"
     
     def generate(self, model_type, primary_prompt, negative_prompt, width, height, seed, scheduler, 
-                 override_steps, override_cfg, use_uncensored_llm=False,
+                 override_steps, override_cfg, use_uncensored_llm=False, custom_text_encoder=None,
                  clip_l_prompt="", openclip_prompt="", t5_prompt="", llama_prompt="",
                  max_length_clip_l=77, max_length_openclip=77, max_length_t5=128, max_length_llama=128, **kwargs):
         print("DEBUG: HiDreamSamplerAdvanced.generate() called")             
@@ -634,8 +660,23 @@ class HiDreamSamplerAdvanced:
         pipe = None; config = None
         
         # Create cache key that includes uncensored state
-        cache_key = f"HiDreamSamplerAdvanced_{model_type}_{'uncensored' if use_uncensored_llm else 'standard'}"
+        cache_key = f"HiDreamSamplerAdvanced_{model_type}_{'uncensored' if use_uncensored_llm else 'standard'}"    
         
+        # --- Check custom_text_encoder ---
+        if custom_text_encoder is not None:
+            if ('/' in custom_text_encoder) and ('llama' in custom_text_encoder) and (len(str(custom_text_encoder).split("/")) == 2):
+                try:
+                    from huggingface_hub import repo_exists
+                    if not repo_exists(custom_text_encoder, repo_type="model"):
+                        raise Exception("Your custom model does not exist or invisible, please use 'huggingface-cli login' to login.")
+                except ImportError:
+                    raise ImportError("Please install huggingface_hub")
+                if ('instruct' in str(custom_text_encoder.lower())):
+                    print('*' * 10 + '\nWarning: The instruct model is not suitable for this model, which may cause issues.\n' + '*' * 10)
+            else:
+                print('*' * 10 + '\nWarning: The model is not suitable for this model, which may cause tensor issues.\n' + '*' * 10)
+                
+
         # --- Model Loading / Caching ---
         if cache_key in self._model_cache:
                 print(f"Checking cache for {cache_key}...")
@@ -680,7 +721,7 @@ class HiDreamSamplerAdvanced:
                 
             print(f"Loading model for {model_type}{' (uncensored)' if use_uncensored_llm else ''}...")
             try:
-                pipe, config = load_models(model_type, use_uncensored_llm)
+                pipe, config = load_models(model_type, use_uncensored_llm, custom_text_encoder)
                 self._model_cache[cache_key] = (pipe, config)
                 print(f"Model {model_type}{' (uncensored)' if use_uncensored_llm else ''} loaded & cached!")
             except Exception as e:
