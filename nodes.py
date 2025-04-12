@@ -1,21 +1,31 @@
 # -*- coding: utf-8 -*-
 # HiDream Sampler Node for ComfyUI
-# Version: 2024-07-29c (NF4/FP8/BNB Support, Final Call Arg Fix)
-#
-# Required Dependencies:
-# - transformers, diffusers, torch, numpy, Pillow
-# - For NF4 models: optimum, accelerate, auto-gptq (`pip install optimum accelerate auto-gptq`)
-# - For non-NF4/FP8 models (4-bit): bitsandbytes (`pip install bitsandbytes`)
-# - Ensure hi_diffusers library is locally available or hdi1 package is installed.
+# Version: 2025-04-12, refractored by power88
+
 import torch
-import numpy as np
-from PIL import Image
 import comfy.model_management as mm
-import gc
-import os # For checking paths if needed
+from comfy.utils import load_torch_file, pil2tensor
+import os
 import importlib.util
-from pathlib import Path
 import json
+from transformers import (
+    CLIPTextModelWithProjection,
+    T5EncoderModel,
+    LlamaForCausalLM,
+    AutoTokenizer
+)
+from diffusers.models.autoencoders import AutoencoderKL
+try:
+    from .hi_diffusers.models.transformers.transformer_hidream_image import HiDreamImageTransformer2DModel
+    from .hi_diffusers.pipelines.hidream_image.pipeline_hidream_image import HiDreamImagePipeline
+    from .hi_diffusers.schedulers.fm_solvers_unipc import FlowUniPCMultistepScheduler
+    from .hi_diffusers.schedulers.flash_flow_match import FlashFlowMatchEulerDiscreteScheduler
+    hidream_classes_loaded = True
+except ImportError as e:
+    hidream_classes_loaded = False
+    raise ModuleNotFoundError(f"Could not import local hi_diffusers: {e}")
+    
+
 
 # --- Optional Dependency Handling ---
 accelerate_available = True
@@ -41,28 +51,6 @@ if not importlib.util.find_spec("BitsAndBytesConfig") or importlib.util.find_spe
     DiffusersBitsAndBytesConfig = None
 
 
-# --- Core Imports ---
-from transformers import (
-    CLIPTextModelWithProjection,
-    CLIPTokenizer,
-    T5EncoderModel,
-    T5Tokenizer,
-    LlamaForCausalLM,
-    AutoTokenizer
-)
-from diffusers.models.autoencoders import AutoencoderKL
-from comfy.utils import load_torch_file, pil2tensor
-try:
-    # Assuming hi_diffusers is cloned into this custom_node's directory
-    from .hi_diffusers.models.transformers.transformer_hidream_image import HiDreamImageTransformer2DModel
-    from .hi_diffusers.pipelines.hidream_image.pipeline_hidream_image import HiDreamImagePipeline
-    from .hi_diffusers.schedulers.fm_solvers_unipc import FlowUniPCMultistepScheduler
-    from .hi_diffusers.schedulers.flash_flow_match import FlashFlowMatchEulerDiscreteScheduler
-    hidream_classes_loaded = True
-except ImportError as e:
-    hidream_classes_loaded = False
-    raise ModuleNotFoundError(f"Could not import local hi_diffusers: {e}")
-    
 
 # --- Directories ---
 extension_directory = os.path.abspath(__file__)
@@ -150,8 +138,6 @@ bnb_transformer_4bit_config = None
 if bnb_available:
     bnb_llm_config = TransformersBitsAndBytesConfig(load_in_4bit=True)
     bnb_transformer_4bit_config = DiffusersBitsAndBytesConfig(load_in_4bit=True)
-
-
 
 class HiDreamDMLoader:
     @classmethod
@@ -516,6 +502,7 @@ class HiDreamKSampler:
         pipe.transformer = MODEL['diffusion_model']
 
         pipe.to(inference_device)
+        pipe.enable_sequential_cpu_offload()
         # TODO: Calculate Sigma to support denosing length.
 
         # Seed
@@ -538,6 +525,8 @@ class HiDreamKSampler:
             output_type="pil"
         )
         tensor = pil2tensor(result_image)
+        mm.unload_all_models()
+        mm.soft_empty_cache()
         return(tensor,)
 
 
@@ -576,3 +565,20 @@ class HiDreamKSampler:
         max_sequence_length_llama: Optional[int] = None,
     ):
         """
+
+# --- Node Mappings ---
+NODE_CLASS_MAPPINGS = {
+    "HiDreamKSampler": HiDreamKSampler,
+    "HiDreamClipTextEncode": HiDreamClipTextEncode,
+    "HiDreamVAELoader": HiDreamVAELoader,
+    "HiDreamTELoader": HiDreamTELoader,
+    "HiDreamDMLoader": HiDreamDMLoader
+}
+
+NODE_DISPLAY_NAME_MAPPINGS = {
+    "HiDreamKSampler": "HiDream KSampler",
+    "HiDreamClipTextEncode": "HiDream Clip Text Encode",
+    "HiDreamVAELoader": "HiDream VAE Loader",
+    "HiDreamTELoader": "HiDream Load CLIP",
+    "HiDreamDMLoader": "HiDream Load diffusion model"
+}
