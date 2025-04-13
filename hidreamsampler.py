@@ -230,6 +230,15 @@ def load_models(model_type, use_uncensored_llm, custom_llm):
         # I'm not sure which LLM the user is using (it could be quantized or full-weight). 
         # So here I can only implement bnb quantization, otherwise it maybe run Out Of Memory (OOM).
         llama_model_name = custom_llm
+        bnb_llm_config = TransformersBitsAndBytesConfig(
+            load_in_4bit=True,
+            load_in_8bit=False,
+            _load_in_4bit=True,
+            _load_in_8bit=False,
+            bnb_4bit_compute_dtype=torch.float16,  # Must match model_dtype
+            bnb_4bit_quant_storage=torch.bfloat16,
+            bnb_4bit_quant_type="nf4",
+        )
         text_encoder_load_kwargs["quantization_config"] = bnb_llm_config
     
     print(f"[1b] Loading Tokenizer: {llama_model_name}...")
